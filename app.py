@@ -8,13 +8,49 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 import re
-import chardet  # <‑‑ nouvelle dépendance pour la détection d'encodage
+# chardet est optionnel : s'il n'est pas présent, on fonctionnera quand même.
+try:
+    import chardet  # détection heuristique d'encodage
+except ModuleNotFoundError:
+    chardet = None
+    st.warning("Le module 'chardet' n'est pas installé ; détection d'encodage limitée aux prologues XML.")
 
 # ------------------------------------------------------------
-#  Helper : décodage robuste des fichiers XML
+#  Helper : décodage robuste des fichiers XML
 # ------------------------------------------------------------
 
 def decode_xml(raw: bytes) -> str:
+    """Décodage UTF‑8 → encodage déclaré → heuristique (si chardet dispo)."""
+    # 1) UTF‑8 rapide
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+
+    # 2) Encodage indiqué dans le prologue XML
+    m = re.search(rb'encoding=["\'']([A-Za-z0-9._-]+)["\'']', raw[:200])
+    if m:
+        enc = m.group(1).decode(errors="ignore")
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            pass
+
+    # 3) Heuristique via chardet (si dispo)
+    if chardet:
+        guess = chardet.detect(raw)["encoding"] or "utf-8"
+        return raw.decode(guess, errors="replace")
+
+    # 4) Fallback : remplace les caractères invalides
+    return raw.decode("utf-8", errors="replace")
+
+def decode_and_parse_xml(raw: bytes):
+    """Retourne (root, cleaned_xml_str) ou lève une erreur ET.ParseError."""
+    # Décodage + parsing en un seul endroit pour centraliser les erreurs
+    xml_text = decode_xml(raw)
+    root = ET.fromstring(xml_text)
+    return root, xml_text
+(raw: bytes) -> str:
     """Retourne le contenu texte d'un fichier XML en gérant l'encodage.
 
     1. Essaie UTF‑8 (chemin rapide).
