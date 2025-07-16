@@ -8,9 +8,9 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 import re
-# chardet est optionnel : s'il n'est pas présent, on fonctionnera quand même.
+# chardet est optionnel : s'il n'est pas présent, l'app fonctionnera mais la détection heuristique sera désactivée.
 try:
-    import chardet  # détection heuristique d'encodage
+    import chardet
 except ModuleNotFoundError:
     chardet = None
     st.warning("Le module 'chardet' n'est pas installé ; détection d'encodage limitée aux prologues XML.")
@@ -20,7 +20,7 @@ except ModuleNotFoundError:
 # ------------------------------------------------------------
 
 def decode_xml(raw: bytes) -> str:
-    """Décodage UTF‑8 → encodage déclaré → heuristique (si chardet dispo)."""
+    """Décodage UTF‑8 › encodage déclaré › heuristique (si chardet)."""
     # 1) UTF‑8 rapide
     try:
         return raw.decode("utf-8")
@@ -28,9 +28,9 @@ def decode_xml(raw: bytes) -> str:
         pass
 
     # 2) Encodage indiqué dans le prologue XML
-    m = re.search(rb'encoding=["\'']([A-Za-z0-9._-]+)["\'']', raw[:200])
+    m = re.search(rb'encoding=[\'\"]([A-Za-z0-9._-]+)[\'\"]', raw[:200])
     if m:
-        enc = m.group(1).decode(errors="ignore")
+        enc = m.group(1).decode("ascii", errors="ignore")
         try:
             return raw.decode(enc)
         except UnicodeDecodeError:
