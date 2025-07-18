@@ -7,6 +7,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import time
+import re
 
 # Configuration de la page
 st.set_page_config(
@@ -74,35 +75,86 @@ def decode_xml_content(file_content):
 def clean_xml_content(xml_content):
     """
     Nettoie le contenu XML en vidant les valeurs des balises Code et Description
-    dans les sections PositionStatus
+    dans les sections PositionStatus sans ajouter de préfixes d'espace de noms
     """
     try:
         start_time = time.time()
         
-        # Parse le XML
+        # D'abord, on va simplement traiter le XML comme du texte pour éviter les problèmes d'espace de noms
+        modifications = 0
+        
+        # Pattern pour trouver les blocs PositionStatus
+        pattern = r'(<PositionStatus>.*?</PositionStatus>)'
+        
+        def process_position_status(match):
+            nonlocal modifications
+            block = match.group(1)
+            original_block = block
+            
+            # Remplacer <Code>6A</Code> par <Code></Code>
+            if '<Code>6A</Code>' in block:
+                block = block.replace('<Code>6A</Code>', '<Code></Code>')
+                modifications += 1
+            
+            # Remplacer <Description>Ouvriers</Description> par <Description></Description>
+            if '<Description>Ouvriers</Description>' in block:
+                block = block.replace('<Description>Ouvriers</Description>', '<Description></Description>')
+                modifications += 1
+            
+            return block
+        
+        # Traiter tous les blocs PositionStatus
+        cleaned_xml = re.sub(pattern, process_position_status, xml_content, flags=re.DOTALL)
+        
+        processing_time = time.time() - start_time
+        
+        return cleaned_xml, modifications, processing_time
+        
+    except Exception as e:
+        st.error(f"Erreur lors du traitement: {e}")
+        return None, 0, 0
+
+def clean_xml_content_with_etree(xml_content):
+    """
+    Version alternative utilisant ElementTree en préservant les espaces de noms
+    """
+    try:
+        start_time = time.time()
+        
+        # Enregistrer tous les espaces de noms présents dans le document
+        namespaces = dict([
+            node for _, node in ET.iterparse(
+                io.StringIO(xml_content), 
+                events=['start-ns']
+            )
+        ])
+        
+        # Parser le XML
         root = ET.fromstring(xml_content)
         
         # Compteur des modifications
         modifications = 0
         
         # Parcourir tous les éléments pour trouver les PositionStatus
-        for position_status in root.iter('PositionStatus'):
-            # Chercher les balises Code et Description dans ce PositionStatus
-            code_elem = position_status.find('Code')
-            description_elem = position_status.find('Description')
-            
-            # Vider la valeur de Code si elle contient "6A"
-            if code_elem is not None and code_elem.text == "6A":
-                code_elem.text = ""
-                modifications += 1
-            
-            # Vider la valeur de Description si elle contient "Ouvriers"
-            if description_elem is not None and description_elem.text == "Ouvriers":
-                description_elem.text = ""
-                modifications += 1
+        # On cherche dans tous les espaces de noms possibles
+        for elem in root.iter():
+            if elem.tag.endswith('PositionStatus') or elem.tag == 'PositionStatus':
+                # Chercher les balises Code et Description dans ce PositionStatus
+                for child in elem:
+                    if (child.tag.endswith('Code') or child.tag == 'Code') and child.text == "6A":
+                        child.text = ""
+                        modifications += 1
+                    elif (child.tag.endswith('Description') or child.tag == 'Description') and child.text == "Ouvriers":
+                        child.text = ""
+                        modifications += 1
+        
+        # Reconstruire le XML en préservant la déclaration et l'encodage
+        xml_declaration = '<?xml version="1.0" encoding="UTF-8"?>\n'
+        if xml_content.startswith('<?xml'):
+            xml_declaration = xml_content[:xml_content.find('?>') + 2] + '\n'
         
         # Convertir l'arbre modifié en string
-        cleaned_xml = ET.tostring(root, encoding='unicode', method='xml')
+        cleaned_xml = xml_declaration + ET.tostring(root, encoding='unicode', method='xml')
         
         processing_time = time.time() - start_time
         
@@ -255,6 +307,15 @@ def main():
         session_duration = datetime.now() - st.session_state.session_start_time
         st.metric("Durée de session", f"{session_duration.seconds//60}min {session_duration.seconds%60}s")
         
+        # Option pour choisir la méthode de traitement
+        st.markdown("---")
+        st.header("⚙️ Options")
+        processing_method = st.radio(
+            "Méthode de traitement",
+            ["Traitement par texte (recommandé)", "Traitement par ElementTree"],
+            help="Le traitement par texte préserve mieux la structure originale du XML"
+        )
+        
         if st.button("🔄 Réinitialiser statistiques"):
             st.session_state.processing_history = []
             st.session_state.total_files_processed = 0
@@ -296,6 +357,9 @@ def main():
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
+                # Déterminer la méthode de traitement
+                use_text_method = processing_method == "Traitement par texte (recommandé)"
+                
                 for i, uploaded_file in enumerate(uploaded_files):
                     status_text.text(f"Traitement de {uploaded_file.name}...")
                     progress_bar.progress((i + 1) / len(uploaded_files))
@@ -313,8 +377,11 @@ def main():
                     # Afficher l'encodage détecté
                     st.info(f"📝 {uploaded_file.name} - Encodage détecté: {detected_encoding}")
                     
-                    # Nettoyer le XML
-                    cleaned_xml, modifications, processing_time = clean_xml_content(xml_content)
+                    # Nettoyer le XML selon la méthode choisie
+                    if use_text_method:
+                        cleaned_xml, modifications, processing_time = clean_xml_content(xml_content)
+                    else:
+                        cleaned_xml, modifications, processing_time = clean_xml_content_with_etree(xml_content)
                     
                     if cleaned_xml:
                         # Enregistrer les statistiques
