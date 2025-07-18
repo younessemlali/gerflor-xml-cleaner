@@ -29,10 +29,8 @@ if 'session_start_time' not in st.session_state:
 
 def detect_xml_encoding(file_content):
     """Détecte l'encodage d'un fichier XML"""
-    # Lire les premiers bytes pour chercher la déclaration XML
     header = file_content[:200]
     
-    # Chercher la déclaration d'encodage dans l'en-tête XML
     try:
         header_str = header.decode('ascii', errors='ignore')
         if 'encoding=' in header_str:
@@ -50,18 +48,14 @@ def detect_xml_encoding(file_content):
 
 def decode_xml_content(file_content):
     """Décode le contenu XML avec détection automatique d'encodage"""
-    # Détecter l'encodage depuis la déclaration XML
     detected_encoding = detect_xml_encoding(file_content)
     
-    # Liste des encodages à tester
     encodings = []
     if detected_encoding:
         encodings.append(detected_encoding)
     
-    # Encodages courants à tester
     encodings.extend(['utf-8', 'iso-8859-1', 'windows-1252', 'cp1252', 'latin-1'])
     
-    # Supprimer les doublons
     encodings = list(dict.fromkeys(encodings))
     
     for encoding in encodings:
@@ -72,59 +66,45 @@ def decode_xml_content(file_content):
     
     return None, None
 
-, 0, 0
-
-def clean_xml_content_with_etree(xml_content):
+def clean_xml_content(xml_content):
     """
-    Version alternative utilisant ElementTree en préservant les espaces de noms
+    Nettoie le contenu XML en vidant les valeurs des balises Code et Description
+    dans les sections PositionStatus
     """
     try:
         start_time = time.time()
-        
-        # Enregistrer tous les espaces de noms présents dans le document
-        namespaces = dict([
-            node for _, node in ET.iterparse(
-                io.StringIO(xml_content), 
-                events=['start-ns']
-            )
-        ])
-        
-        # Parser le XML
-        root = ET.fromstring(xml_content)
-        
-        # Compteur des modifications
         modifications = 0
         
-        # Parcourir tous les éléments pour trouver les PositionStatus
-        # On cherche dans tous les espaces de noms possibles
-        for elem in root.iter():
-            if elem.tag.endswith('PositionStatus') or elem.tag == 'PositionStatus':
-                # Chercher les balises Code et Description dans ce PositionStatus
-                for child in elem:
-                    if (child.tag.endswith('Code') or child.tag == 'Code') and child.text == "6A":
-                        child.text = ""
-                        modifications += 1
-                    elif (child.tag.endswith('Description') or child.tag == 'Description') and child.text == "Ouvriers":
-                        child.text = ""
-                        modifications += 1
+        # Pattern pour trouver les blocs PositionStatus (avec ou sans espaces de noms)
+        pattern = r'(<(?:\w+:)?PositionStatus>.*?</(?:\w+:)?PositionStatus>)'
         
-        # Reconstruire le XML en préservant la déclaration et l'encodage
-        xml_declaration = '<?xml version="1.0" encoding="UTF-8"?>\n'
-        if xml_content.startswith('<?xml'):
-            xml_declaration = xml_content[:xml_content.find('?>') + 2] + '\n'
+        def process_position_status(match):
+            nonlocal modifications
+            block = match.group(1)
+            
+            # Remplacer <Code>6A</Code> par <Code></Code> (avec ou sans préfixe)
+            code_pattern = r'<((?:\w+:)?Code)>6A</\1>'
+            if re.search(code_pattern, block):
+                block = re.sub(code_pattern, r'<\1></\1>', block)
+                modifications += 1
+            
+            # Remplacer <Description>Ouvriers</Description> par <Description></Description>
+            desc_pattern = r'<((?:\w+:)?Description)>Ouvriers</\1>'
+            if re.search(desc_pattern, block):
+                block = re.sub(desc_pattern, r'<\1></\1>', block)
+                modifications += 1
+            
+            return block
         
-        # Convertir l'arbre modifié en string
-        cleaned_xml = xml_declaration + ET.tostring(root, encoding='unicode', method='xml')
+        # Traiter tous les blocs PositionStatus
+        cleaned_xml = re.sub(pattern, process_position_status, xml_content, flags=re.DOTALL)
         
         processing_time = time.time() - start_time
         
         return cleaned_xml, modifications, processing_time
         
-    except ET.ParseError as e:
-        st.error(f"Erreur de parsing XML: {e}")
-        return None, 0, 0
     except Exception as e:
-        st.error(f"Erreur inattendue: {e}")
+        st.error(f"Erreur lors du traitement: {e}")
         return None, 0, 0
 
 def log_processing(filename, file_size, modifications, processing_time):
@@ -267,15 +247,6 @@ def main():
         session_duration = datetime.now() - st.session_state.session_start_time
         st.metric("Durée de session", f"{session_duration.seconds//60}min {session_duration.seconds%60}s")
         
-        # Option pour choisir la méthode de traitement
-        st.markdown("---")
-        st.header("⚙️ Options")
-        processing_method = st.radio(
-            "Méthode de traitement",
-            ["Traitement par texte (recommandé)", "Traitement par ElementTree"],
-            help="Le traitement par texte préserve mieux la structure originale du XML"
-        )
-        
         if st.button("🔄 Réinitialiser statistiques"):
             st.session_state.processing_history = []
             st.session_state.total_files_processed = 0
@@ -317,9 +288,6 @@ def main():
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                # Déterminer la méthode de traitement
-                use_text_method = processing_method == "Traitement par texte (recommandé)"
-                
                 for i, uploaded_file in enumerate(uploaded_files):
                     status_text.text(f"Traitement de {uploaded_file.name}...")
                     progress_bar.progress((i + 1) / len(uploaded_files))
@@ -337,11 +305,8 @@ def main():
                     # Afficher l'encodage détecté
                     st.info(f"📝 {uploaded_file.name} - Encodage détecté: {detected_encoding}")
                     
-                    # Nettoyer le XML selon la méthode choisie
-                    if use_text_method:
-                        cleaned_xml, modifications, processing_time = clean_xml_content(xml_content)
-                    else:
-                        cleaned_xml, modifications, processing_time = clean_xml_content_with_etree(xml_content)
+                    # Nettoyer le XML
+                    cleaned_xml, modifications, processing_time = clean_xml_content(xml_content)
                     
                     if cleaned_xml:
                         # Enregistrer les statistiques
