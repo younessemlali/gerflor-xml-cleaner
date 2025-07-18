@@ -18,29 +18,50 @@ def clean_xml_content(xml_content):
     """
     modifications = 0
     
-    # Pattern pour trouver et traiter les blocs PositionStatus
-    # Ce pattern capture tout le bloc PositionStatus
-    pattern = r'(<PositionStatus>.*?</PositionStatus>)'
+    # D'abord, affichons un aperçu pour déboguer
+    if '<PositionStatus>' in xml_content:
+        st.info("✓ Blocs PositionStatus détectés dans le fichier")
+    
+    # Patterns plus flexibles pour gérer différents formats
+    # Pattern 1: Pour les blocs PositionStatus avec ou sans attributs et espaces
+    pattern = r'<PositionStatus[^>]*>.*?</PositionStatus>'
     
     def process_block(match):
         nonlocal modifications
-        block = match.group(1)
+        block = match.group(0)
         original_block = block
         
-        # Remplacer <Code>6A</Code> par <Code></Code>
-        if '<Code>6A</Code>' in block:
-            block = block.replace('<Code>6A</Code>', '<Code></Code>')
+        # Patterns pour Code et Description avec gestion des espaces et retours à la ligne
+        code_pattern = r'<Code[^>]*>\s*6A\s*</Code>'
+        desc_pattern = r'<Description[^>]*>\s*Ouvriers\s*</Description>'
+        
+        # Remplacer Code avec 6A
+        if re.search(code_pattern, block):
+            block = re.sub(code_pattern, '<Code></Code>', block)
             modifications += 1
         
-        # Remplacer <Description>Ouvriers</Description> par <Description></Description>
-        if '<Description>Ouvriers</Description>' in block:
-            block = block.replace('<Description>Ouvriers</Description>', '<Description></Description>')
+        # Remplacer Description avec Ouvriers
+        if re.search(desc_pattern, block):
+            block = re.sub(desc_pattern, '<Description></Description>', block)
             modifications += 1
         
         return block
     
     # Appliquer les modifications
-    cleaned_xml = re.sub(pattern, process_block, xml_content, flags=re.DOTALL)
+    cleaned_xml = re.sub(pattern, process_block, xml_content, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Si aucune modification, essayons une approche plus simple
+    if modifications == 0:
+        # Recherche directe dans tout le document
+        if '<Code>6A</Code>' in xml_content:
+            xml_content = xml_content.replace('<Code>6A</Code>', '<Code></Code>')
+            modifications += xml_content.count('<Code></Code>')
+        
+        if '<Description>Ouvriers</Description>' in xml_content:
+            xml_content = xml_content.replace('<Description>Ouvriers</Description>', '<Description></Description>')
+            modifications += xml_content.count('<Description></Description>')
+        
+        cleaned_xml = xml_content
     
     return cleaned_xml, modifications
 
@@ -138,7 +159,10 @@ def main():
                             st.write(f"📄 **{result['name']}**")
                         
                         with col2:
-                            st.write(f"✏️ {result['modifications']} modifications")
+                            if result['modifications'] > 0:
+                                st.success(f"✏️ {result['modifications']} modifications")
+                            else:
+                                st.warning(f"⚠️ Aucune modification")
                         
                         with col3:
                             # Bouton de téléchargement individuel
@@ -149,6 +173,23 @@ def main():
                                 mime="application/xml",
                                 key=f"download_{result['name']}"
                             )
+                
+                # Afficher un aperçu du contenu pour débogage
+                with st.expander("🔍 Débogage - Voir le contenu du fichier"):
+                    if results:
+                        sample = results[0]['content'][:500]
+                        st.code(sample + "...", language="xml")
+                        
+                        # Rechercher les patterns
+                        if '<PositionStatus' in sample:
+                            st.success("✓ PositionStatus trouvé")
+                        else:
+                            st.warning("⚠️ PositionStatus non trouvé dans l'aperçu")
+                        
+                        if '6A' in sample:
+                            st.info("✓ '6A' trouvé dans l'aperçu")
+                        if 'Ouvriers' in sample:
+                            st.info("✓ 'Ouvriers' trouvé dans l'aperçu")
                 
                 # Téléchargement groupé si plusieurs fichiers
                 if len(results) > 1:
