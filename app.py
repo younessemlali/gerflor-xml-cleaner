@@ -72,47 +72,7 @@ def decode_xml_content(file_content):
     
     return None, None
 
-def clean_xml_content(xml_content):
-    """
-    Nettoie le contenu XML en vidant les valeurs des balises Code et Description
-    dans les sections PositionStatus sans ajouter de préfixes d'espace de noms
-    """
-    try:
-        start_time = time.time()
-        
-        # D'abord, on va simplement traiter le XML comme du texte pour éviter les problèmes d'espace de noms
-        modifications = 0
-        
-        # Pattern pour trouver les blocs PositionStatus
-        pattern = r'(<PositionStatus>.*?</PositionStatus>)'
-        
-        def process_position_status(match):
-            nonlocal modifications
-            block = match.group(1)
-            original_block = block
-            
-            # Remplacer <Code>6A</Code> par <Code></Code>
-            if '<Code>6A</Code>' in block:
-                block = block.replace('<Code>6A</Code>', '<Code></Code>')
-                modifications += 1
-            
-            # Remplacer <Description>Ouvriers</Description> par <Description></Description>
-            if '<Description>Ouvriers</Description>' in block:
-                block = block.replace('<Description>Ouvriers</Description>', '<Description></Description>')
-                modifications += 1
-            
-            return block
-        
-        # Traiter tous les blocs PositionStatus
-        cleaned_xml = re.sub(pattern, process_position_status, xml_content, flags=re.DOTALL)
-        
-        processing_time = time.time() - start_time
-        
-        return cleaned_xml, modifications, processing_time
-        
-    except Exception as e:
-        st.error(f"Erreur lors du traitement: {e}")
-        return None, 0, 0
+, 0, 0
 
 def clean_xml_content_with_etree(xml_content):
     """
