@@ -1,393 +1,183 @@
 import streamlit as st
-import xml.etree.ElementTree as ET
+import re
 import io
 import zipfile
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
-import time
-import re
 
 # Configuration de la page
 st.set_page_config(
     page_title="Nettoyage XML GERFLOR", 
     page_icon="🧹",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
-
-# Initialisation des données de session
-if 'processing_history' not in st.session_state:
-    st.session_state.processing_history = []
-if 'total_files_processed' not in st.session_state:
-    st.session_state.total_files_processed = 0
-if 'total_modifications' not in st.session_state:
-    st.session_state.total_modifications = 0
-if 'session_start_time' not in st.session_state:
-    st.session_state.session_start_time = datetime.now()
-
-def detect_xml_encoding(file_content):
-    """Détecte l'encodage d'un fichier XML"""
-    header = file_content[:200]
-    
-    try:
-        header_str = header.decode('ascii', errors='ignore')
-        if 'encoding=' in header_str:
-            start = header_str.find('encoding=') + 10
-            end = header_str.find('"', start)
-            if end == -1:
-                end = header_str.find("'", start)
-            if end != -1:
-                encoding = header_str[start:end]
-                return encoding.lower()
-    except:
-        pass
-    
-    return None
-
-def decode_xml_content(file_content):
-    """Décode le contenu XML avec détection automatique d'encodage"""
-    detected_encoding = detect_xml_encoding(file_content)
-    
-    encodings = []
-    if detected_encoding:
-        encodings.append(detected_encoding)
-    
-    encodings.extend(['utf-8', 'iso-8859-1', 'windows-1252', 'cp1252', 'latin-1'])
-    
-    encodings = list(dict.fromkeys(encodings))
-    
-    for encoding in encodings:
-        try:
-            return file_content.decode(encoding), encoding
-        except (UnicodeDecodeError, LookupError):
-            continue
-    
-    return None, None
 
 def clean_xml_content(xml_content):
     """
-    Nettoie le contenu XML en vidant les valeurs des balises Code et Description
-    dans les sections PositionStatus
+    Nettoie le contenu XML en vidant les valeurs 6A et Ouvriers
+    dans les balises Code et Description des blocs PositionStatus
     """
-    try:
-        start_time = time.time()
-        modifications = 0
+    modifications = 0
+    
+    # Pattern pour trouver et traiter les blocs PositionStatus
+    # Ce pattern capture tout le bloc PositionStatus
+    pattern = r'(<PositionStatus>.*?</PositionStatus>)'
+    
+    def process_block(match):
+        nonlocal modifications
+        block = match.group(1)
+        original_block = block
         
-        # Pattern pour trouver les blocs PositionStatus (avec ou sans espaces de noms)
-        pattern = r'(<(?:\w+:)?PositionStatus>.*?</(?:\w+:)?PositionStatus>)'
+        # Remplacer <Code>6A</Code> par <Code></Code>
+        if '<Code>6A</Code>' in block:
+            block = block.replace('<Code>6A</Code>', '<Code></Code>')
+            modifications += 1
         
-        def process_position_status(match):
-            nonlocal modifications
-            block = match.group(1)
-            
-            # Remplacer <Code>6A</Code> par <Code></Code> (avec ou sans préfixe)
-            code_pattern = r'<((?:\w+:)?Code)>6A</\1>'
-            if re.search(code_pattern, block):
-                block = re.sub(code_pattern, r'<\1></\1>', block)
-                modifications += 1
-            
-            # Remplacer <Description>Ouvriers</Description> par <Description></Description>
-            desc_pattern = r'<((?:\w+:)?Description)>Ouvriers</\1>'
-            if re.search(desc_pattern, block):
-                block = re.sub(desc_pattern, r'<\1></\1>', block)
-                modifications += 1
-            
-            return block
+        # Remplacer <Description>Ouvriers</Description> par <Description></Description>
+        if '<Description>Ouvriers</Description>' in block:
+            block = block.replace('<Description>Ouvriers</Description>', '<Description></Description>')
+            modifications += 1
         
-        # Traiter tous les blocs PositionStatus
-        cleaned_xml = re.sub(pattern, process_position_status, xml_content, flags=re.DOTALL)
-        
-        processing_time = time.time() - start_time
-        
-        return cleaned_xml, modifications, processing_time
-        
-    except Exception as e:
-        st.error(f"Erreur lors du traitement: {e}")
-        return None, 0, 0
-
-def log_processing(filename, file_size, modifications, processing_time):
-    """Enregistre les statistiques de traitement"""
-    log_entry = {
-        'timestamp': datetime.now(),
-        'filename': filename,
-        'file_size_kb': round(file_size / 1024, 2),
-        'modifications': modifications,
-        'processing_time_ms': round(processing_time * 1000, 2)
-    }
+        return block
     
-    st.session_state.processing_history.append(log_entry)
-    st.session_state.total_files_processed += 1
-    st.session_state.total_modifications += modifications
-
-def create_dashboard():
-    """Crée le dashboard de monitoring"""
-    st.header("📊 Dashboard de Monitoring")
+    # Appliquer les modifications
+    cleaned_xml = re.sub(pattern, process_block, xml_content, flags=re.DOTALL)
     
-    if not st.session_state.processing_history:
-        st.info("Aucune donnée de traitement disponible. Traitez des fichiers pour voir les statistiques.")
-        return
-    
-    # Métriques principales
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "Fichiers traités",
-            st.session_state.total_files_processed,
-            delta=len([h for h in st.session_state.processing_history if h['timestamp'].date() == datetime.now().date()])
-        )
-    
-    with col2:
-        st.metric(
-            "Total modifications",
-            st.session_state.total_modifications,
-            delta=sum([h['modifications'] for h in st.session_state.processing_history[-10:]])
-        )
-    
-    with col3:
-        avg_time = sum([h['processing_time_ms'] for h in st.session_state.processing_history]) / len(st.session_state.processing_history)
-        st.metric(
-            "Temps moyen (ms)",
-            f"{avg_time:.2f}",
-            delta=f"{st.session_state.processing_history[-1]['processing_time_ms']:.2f}" if st.session_state.processing_history else "0"
-        )
-    
-    with col4:
-        total_size = sum([h['file_size_kb'] for h in st.session_state.processing_history])
-        st.metric(
-            "Volume traité (KB)",
-            f"{total_size:.2f}",
-            delta=f"{st.session_state.processing_history[-1]['file_size_kb']:.2f}" if st.session_state.processing_history else "0"
-        )
-    
-    # Graphiques
-    df = pd.DataFrame(st.session_state.processing_history)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📈 Modifications par fichier")
-        fig_modifications = px.bar(
-            df.tail(20), 
-            x='filename', 
-            y='modifications',
-            title="Derniers 20 fichiers traités",
-            color='modifications',
-            color_continuous_scale='Viridis'
-        )
-        fig_modifications.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_modifications, use_container_width=True)
-    
-    with col2:
-        st.subheader("⏱️ Temps de traitement")
-        fig_time = px.line(
-            df.tail(20), 
-            x='timestamp', 
-            y='processing_time_ms',
-            title="Évolution du temps de traitement",
-            markers=True
-        )
-        st.plotly_chart(fig_time, use_container_width=True)
-    
-    # Graphique en secteurs
-    st.subheader("📊 Répartition des modifications")
-    modification_counts = df['modifications'].value_counts().head(10)
-    fig_pie = px.pie(
-        values=modification_counts.values,
-        names=modification_counts.index,
-        title="Répartition du nombre de modifications par fichier"
-    )
-    st.plotly_chart(fig_pie, use_container_width=True)
-    
-    # Tableau des derniers traitements
-    st.subheader("📋 Historique des traitements")
-    df_display = df.tail(10)[['timestamp', 'filename', 'file_size_kb', 'modifications', 'processing_time_ms']]
-    df_display['timestamp'] = df_display['timestamp'].dt.strftime('%H:%M:%S')
-    df_display.columns = ['Heure', 'Fichier', 'Taille (KB)', 'Modifications', 'Temps (ms)']
-    st.dataframe(df_display, use_container_width=True)
-    
-    # Bouton d'export des statistiques
-    if st.button("📥 Exporter les statistiques"):
-        csv = df.to_csv(index=False)
-        st.download_button(
-            label="⬇️ Télécharger CSV",
-            data=csv,
-            file_name=f"gerflor_statistics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
+    return cleaned_xml, modifications
 
 def main():
     st.title("🧹 Nettoyage XML GERFLOR")
-    st.markdown("**Application pour vider les valeurs des balises Code et Description**")
+    st.markdown("**Suppression automatique des valeurs 6A et Ouvriers**")
     
-    # Sidebar avec informations et statistiques en temps réel
-    with st.sidebar:
-        st.header("ℹ️ Informations")
+    # Zone d'information
+    with st.expander("ℹ️ Informations sur le traitement"):
         st.markdown("""
-        **Balises traitées :**
-        - `<Code>6A</Code>` → `<Code></Code>`
-        - `<Description>Ouvriers</Description>` → `<Description></Description>`
+        Cette application traite vos fichiers XML en :
+        - Supprimant la valeur "6A" dans les balises `<Code>`
+        - Supprimant la valeur "Ouvriers" dans les balises `<Description>`
+        - Uniquement dans les blocs `<PositionStatus>`
         
-        **Structure ciblée :**
+        **Exemple de transformation :**
         ```xml
         <PositionStatus>
-          <Code>6A</Code>
-          <Description>Ouvriers</Description>
+            <Code>6A</Code>              →    <Code></Code>
+            <Description>Ouvriers</Description>    →    <Description></Description>
         </PositionStatus>
         ```
         """)
-        
-        st.markdown("---")
-        st.header("📊 Statistiques de session")
-        st.metric("Fichiers traités", st.session_state.total_files_processed)
-        st.metric("Modifications totales", st.session_state.total_modifications)
-        
-        session_duration = datetime.now() - st.session_state.session_start_time
-        st.metric("Durée de session", f"{session_duration.seconds//60}min {session_duration.seconds%60}s")
-        
-        if st.button("🔄 Réinitialiser statistiques"):
-            st.session_state.processing_history = []
-            st.session_state.total_files_processed = 0
-            st.session_state.total_modifications = 0
-            st.session_state.session_start_time = datetime.now()
-            st.rerun()
     
-    # Tabs pour séparer les fonctionnalités
-    tab1, tab2 = st.tabs(["🔧 Traitement", "📊 Monitoring"])
+    # Upload des fichiers
+    st.header("📁 Charger vos fichiers XML")
+    uploaded_files = st.file_uploader(
+        "Sélectionnez un ou plusieurs fichiers XML",
+        type=['xml'],
+        accept_multiple_files=True
+    )
     
-    with tab1:
-        # Upload des fichiers
-        st.header("📁 Charger vos fichiers XML")
-        uploaded_files = st.file_uploader(
-            "Sélectionnez vos fichiers XML",
-            type=['xml'],
-            accept_multiple_files=True,
-            help="Vous pouvez sélectionner plusieurs fichiers XML à traiter"
-        )
+    if uploaded_files:
+        st.success(f"✅ {len(uploaded_files)} fichier(s) chargé(s)")
         
-        if uploaded_files:
-            st.success(f"✅ {len(uploaded_files)} fichier(s) chargé(s)")
+        if st.button("🚀 Nettoyer les fichiers", type="primary", use_container_width=True):
             
-            # Prévisualisation des fichiers
-            with st.expander("👀 Prévisualisation des fichiers"):
-                for file in uploaded_files:
-                    st.write(f"📄 **{file.name}** - {file.size} bytes")
+            # Préparer les résultats
+            results = []
+            total_modifications = 0
             
-            # Bouton pour traiter les fichiers
-            if st.button("🚀 Traiter les fichiers", type="primary"):
-                # Conteneur pour les résultats
-                results_container = st.container()
-                
-                # Préparer les fichiers traités
-                processed_files = []
-                total_modifications = 0
-                
-                # Barre de progression
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                for i, uploaded_file in enumerate(uploaded_files):
-                    status_text.text(f"Traitement de {uploaded_file.name}...")
-                    progress_bar.progress((i + 1) / len(uploaded_files))
+            # Traiter chaque fichier
+            for uploaded_file in uploaded_files:
+                try:
+                    # Lire le contenu
+                    content = uploaded_file.read()
                     
-                    # Lire le contenu du fichier avec détection d'encodage
-                    file_content = uploaded_file.read()
+                    # Essayer plusieurs encodages
+                    xml_text = None
+                    for encoding in ['utf-8', 'iso-8859-1', 'windows-1252', 'latin-1']:
+                        try:
+                            xml_text = content.decode(encoding)
+                            break
+                        except:
+                            continue
                     
-                    # Décoder avec détection automatique d'encodage
-                    xml_content, detected_encoding = decode_xml_content(file_content)
-                    
-                    if xml_content is None:
-                        st.error(f"❌ Impossible de décoder le fichier {uploaded_file.name}. Encodage non supporté.")
+                    if xml_text is None:
+                        st.error(f"❌ Impossible de décoder {uploaded_file.name}")
                         continue
                     
-                    # Afficher l'encodage détecté
-                    st.info(f"📝 {uploaded_file.name} - Encodage détecté: {detected_encoding}")
-                    
                     # Nettoyer le XML
-                    cleaned_xml, modifications, processing_time = clean_xml_content(xml_content)
+                    cleaned_xml, modifications = clean_xml_content(xml_text)
                     
-                    if cleaned_xml:
-                        # Enregistrer les statistiques
-                        log_processing(uploaded_file.name, len(file_content), modifications, processing_time)
-                        
-                        # Préparer le nom du fichier nettoyé
-                        original_name = uploaded_file.name
-                        clean_name = original_name.replace('.xml', '_cleaned.xml')
-                        
-                        processed_files.append({
-                            'original_name': original_name,
-                            'clean_name': clean_name,
-                            'content': cleaned_xml,
-                            'modifications': modifications,
-                            'processing_time': processing_time
-                        })
-                        
-                        total_modifications += modifications
+                    # Ajouter aux résultats
+                    results.append({
+                        'name': uploaded_file.name,
+                        'content': cleaned_xml,
+                        'modifications': modifications
+                    })
+                    
+                    total_modifications += modifications
+                    
+                except Exception as e:
+                    st.error(f"❌ Erreur avec {uploaded_file.name}: {str(e)}")
+            
+            # Afficher les résultats
+            if results:
+                st.header("📊 Résultats")
                 
-                status_text.text("✅ Traitement terminé !")
-                progress_bar.progress(1.0)
+                # Statistiques
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Fichiers traités", len(results))
+                with col2:
+                    st.metric("Total modifications", total_modifications)
                 
-                # Afficher les résultats
-                with results_container:
-                    st.header("📊 Résultats du traitement")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Fichiers traités", len(processed_files))
-                    with col2:
-                        st.metric("Total modifications", total_modifications)
-                    with col3:
-                        avg_time = sum([f['processing_time'] for f in processed_files]) / len(processed_files) if processed_files else 0
-                        st.metric("Temps moyen", f"{avg_time*1000:.2f}ms")
-                    with col4:
-                        st.metric("Statut", "✅ Terminé" if processed_files else "❌ Erreur")
-                    
-                    # Tableau des résultats
-                    if processed_files:
-                        st.subheader("📋 Détail par fichier")
-                        for file_info in processed_files:
-                            with st.expander(f"📄 {file_info['original_name']} ({file_info['modifications']} modifications - {file_info['processing_time']*1000:.2f}ms)"):
-                                col1, col2 = st.columns(2)
-                                
-                                with col1:
-                                    st.download_button(
-                                        label="⬇️ Télécharger le fichier nettoyé",
-                                        data=file_info['content'],
-                                        file_name=file_info['clean_name'],
-                                        mime="application/xml"
-                                    )
-                                
-                                with col2:
-                                    if st.button(f"👀 Prévisualiser", key=f"preview_{file_info['original_name']}"):
-                                        st.code(file_info['content'][:1000] + "..." if len(file_info['content']) > 1000 else file_info['content'], language="xml")
+                # Détails par fichier
+                st.subheader("📋 Fichiers traités")
+                
+                for result in results:
+                    with st.container():
+                        col1, col2, col3 = st.columns([3, 1, 1])
                         
-                        # Téléchargement groupé si plusieurs fichiers
-                        if len(processed_files) > 1:
-                            st.subheader("📦 Téléchargement groupé")
-                            
-                            # Créer un ZIP avec tous les fichiers
-                            zip_buffer = io.BytesIO()
-                            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                                for file_info in processed_files:
-                                    zip_file.writestr(file_info['clean_name'], file_info['content'])
-                            
-                            zip_buffer.seek(0)
-                            
+                        with col1:
+                            st.write(f"📄 **{result['name']}**")
+                        
+                        with col2:
+                            st.write(f"✏️ {result['modifications']} modifications")
+                        
+                        with col3:
+                            # Bouton de téléchargement individuel
                             st.download_button(
-                                label="⬇️ Télécharger tous les fichiers (ZIP)",
-                                data=zip_buffer.getvalue(),
-                                file_name=f"gerflor_cleaned_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                                mime="application/zip"
+                                label="⬇️ Télécharger",
+                                data=result['content'],
+                                file_name=result['name'].replace('.xml', '_cleaned.xml'),
+                                mime="application/xml",
+                                key=f"download_{result['name']}"
                             )
+                
+                # Téléchargement groupé si plusieurs fichiers
+                if len(results) > 1:
+                    st.markdown("---")
+                    st.subheader("📦 Téléchargement groupé")
+                    
+                    # Créer un ZIP
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        for result in results:
+                            clean_name = result['name'].replace('.xml', '_cleaned.xml')
+                            zip_file.writestr(clean_name, result['content'])
+                    
+                    zip_buffer.seek(0)
+                    
+                    st.download_button(
+                        label="⬇️ Télécharger tous les fichiers (ZIP)",
+                        data=zip_buffer.getvalue(),
+                        file_name=f"gerflor_cleaned_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                        mime="application/zip",
+                        use_container_width=True
+                    )
     
-    with tab2:
-        create_dashboard()
+    else:
+        st.info("👆 Veuillez charger un ou plusieurs fichiers XML à nettoyer")
     
     # Footer
     st.markdown("---")
-    st.markdown("**🏢 Application GERFLOR** - Nettoyage automatique des fichiers XML avec monitoring intégré")
+    st.markdown("🏢 **GERFLOR** - Nettoyage automatique des fichiers XML")
 
 if __name__ == "__main__":
     main()
